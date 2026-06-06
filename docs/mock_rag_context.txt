@@ -1,0 +1,9 @@
+LondonZero mock RAG context for feasibility agent.
+
+This is placeholder planning text for local retrieval tests. It can represent policy notes, junction constraints, or public realm guidance for Bank Junction.
+
+Key mock points:
+- Bank Junction has complex pedestrian, cycle, and vehicle movements.
+- Feasibility reasoning should consider existing access constraints and junction simplicity.
+- Redesign concepts should prioritise clear crossings, cycle separation, and legible turning movements.
+- This document is a mock stand-in for future curated policy and site context.
