@@ -8,26 +8,28 @@ Responsibilities:
 
 Returns CollisionProfile + image URL back to the orchestrator.
 
-# TODO (Jas/Balmee): implement the three tools this agent wraps,
-# then wire them in execute() below.
+Logic ported from the standalone Skill 1/Skill 2 pipeline (DfT STATS19 download +
+decode + radius filter; Mapillary radius search). The three tools are implemented
+in tools/{load_collision_data,mapillary_search,aggregate_context}.py.
 """
 
 import logging
-from collections.abc import AsyncGenerator
-from typing import Any
 
-from nat.builder.builder import Builder
-from nat.builder.framework_enum import LLMFrameworkEnum
-from nat.builder.function_info import FunctionInfo
-from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from pydantic import Field
 
 from londonzero_agents.data_models.collision_profile import CollisionProfile
 from londonzero_agents.data_models.location import LocationQuery
-from londonzero_agents.tools.aggregate_context import AggregateContextConfig, aggregate_context, AggregateContextInput
-from londonzero_agents.tools.load_collision_data import LoadCollisionDataConfig, load_collision_data, LoadCollisionDataInput
-from londonzero_agents.tools.mapillary_search import MapillarySearchConfig, mapillary_search, MapillarySearchInput
+from londonzero_agents.tools.aggregate_context import AggregateContextConfig
+from londonzero_agents.tools.aggregate_context import AggregateContextInput
+from londonzero_agents.tools.aggregate_context import aggregate_context
+from londonzero_agents.tools.load_collision_data import LoadCollisionDataConfig
+from londonzero_agents.tools.load_collision_data import LoadCollisionDataInput
+from londonzero_agents.tools.load_collision_data import load_collision_data
+from londonzero_agents.tools.mapillary_search import MapillarySearchConfig
+from londonzero_agents.tools.mapillary_search import MapillarySearchInput
+from londonzero_agents.tools.mapillary_search import mapillary_search
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +42,8 @@ class DataRetrievalAgentConfig(FunctionBaseConfig, name="data_retrieval_agent"):
 
 class DataRetrievalAgentInput(BaseModel):
     location: LocationQuery
-    year_from: int = Field(default=2019)
-    year_to: int = Field(default=2023)
+    year_from: int = Field(default=2020)
+    year_to: int = Field(default=2024)
 
 
 class DataRetrievalAgentOutput(BaseModel):
@@ -50,19 +52,13 @@ class DataRetrievalAgentOutput(BaseModel):
     image_id: str
 
 
-@register_function(
-    FunctionInfo(
-        name="data_retrieval_agent",
-        description=(
-            "Retrieve collision history and street imagery for a location. "
-            "Returns a structured CollisionProfile and a Mapillary image URL."
-        ),
-    )
-)
 async def run_data_retrieval_agent(
     config: DataRetrievalAgentConfig,
     input: DataRetrievalAgentInput,
 ) -> DataRetrievalAgentOutput:
+    """Retrieve collision history and street imagery for a location, returning a
+    structured CollisionProfile and a Mapillary image URL. Invoked directly by the
+    orchestrator (plain async call, not via the NAT function registry)."""
     # Step 1 — load raw STATS19 records
     collision_raw = await load_collision_data(
         config.collision_data,

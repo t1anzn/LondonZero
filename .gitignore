@@ -1,0 +1,25 @@
+# ── Secrets ───────────────────────────────────────────────────────────────
+# Never commit real API keys. .env.example is the tracked template.
+.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── Virtual environments / uv ─────────────────────────────────────────────
+.venv/
+venv/
+
+# ── Data / pipeline artifacts (large, regenerated) ────────────────────────
+data/stats19/
+pipeline_output/
+agent_output/
+
+# ── OS ────────────────────────────────────────────────────────────────────
+.DS_Store
