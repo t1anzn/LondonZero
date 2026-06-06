@@ -17,7 +17,7 @@ from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.component_ref import LLMRef
 from nat.data_models.function import FunctionBaseConfig
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from londonzero_agents.data_models.collision_profile import CollisionProfile
 from londonzero_agents.data_models.hazard_assessment import HazardAssessment
@@ -39,10 +39,6 @@ class PerceptionAgentConfig(FunctionBaseConfig, name="perception_agent"):
 class PerceptionAgentInput(BaseModel):
     image_url: str
     collision_profile: CollisionProfile
-
-
-# pydantic import needed at module level
-from pydantic import BaseModel
 
 
 @register_function(
