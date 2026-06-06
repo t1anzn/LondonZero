@@ -1,0 +1,464 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "pull-request/[0-9]+"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Python lint (ruff check + ruff format + yamllint)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.6.2"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format
+        run: uv run ruff format --check .
+
+      - name: yamllint
+        run: |
+          uv run yamllint \
+            -d '{extends: default, rules: {line-length: {max: 120}, document-start: disable, indentation: {spaces: 2, indent-sequences: false}}}' \
+            $(git ls-files '*.yml' '*.yaml' | grep -v '\.gitlab-ci\.yml')
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Python type checking (mypy)
+  # ---------------------------------------------------------------------------
+  typecheck:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.6.2"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: mypy
+        run: uv run mypy src/vss_agents/
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Python tests (pytest + coverage)
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.6.2"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config
+
+      - name: Install dev dependencies
+        run: uv sync --group dev --frozen
+
+      - name: pytest
+        timeout-minutes: 10
+        run: |
+          uv run pytest \
+            --cov=src/vss_agents \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            -m "not slow and not integration"
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: coverage-report
+          path: agent/coverage.xml
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Security scanning (detect-secrets)
+  # ---------------------------------------------------------------------------
+  security:
+    name: Security Scan (detect-secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install detect-secrets
+        run: python -m pip install detect-secrets==1.5.0
+
+      - name: detect-secrets
+        run: |
+          detect-secrets-hook --no-verify \
+            --exclude-files '(gitleaks-baseline\.json|^deployments/MANIFEST$)' \
+            $(git ls-files)
+
+  # ---------------------------------------------------------------------------
+  # Job 5: Frontend lint + typecheck
+  # ---------------------------------------------------------------------------
+  frontend-lint:
+    name: Lint & Typecheck (UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+  # ---------------------------------------------------------------------------
+  # Job 6: Frontend build
+  # ---------------------------------------------------------------------------
+  frontend-build:
+    name: Build (UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Job 7: Copyright header check
+  # ---------------------------------------------------------------------------
+  copyright-headers:
+    name: Copyright Headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Check SPDX headers
+        run: python3 .github/scripts/check_copyright_headers.py
+
+  # ---------------------------------------------------------------------------
+  # Job 8: DCO sign-off check
+  # ---------------------------------------------------------------------------
+  dco:
+    name: DCO Sign-off
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO sign-off
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          BASE_REF="${GITHUB_BASE_REF:-}"
+          if [ -z "$BASE_REF" ] && [[ "${GITHUB_REF_NAME:-}" =~ ^pull-request/([0-9]+)$ ]]; then
+            PR_NUMBER="${BASH_REMATCH[1]}"
+            BASE_REF=$(PR_NUMBER="$PR_NUMBER" python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          repo = os.environ.get("GITHUB_REPOSITORY")
+          token = os.environ.get("GITHUB_TOKEN")
+          pr_number = os.environ.get("PR_NUMBER")
+          if not repo or not token or not pr_number:
+              sys.exit(0)
+
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=10) as response:
+                  payload = json.load(response)
+          except Exception:
+              sys.exit(0)
+
+          print(payload.get("base", {}).get("ref", ""))
+          PY
+          )
+          fi
+
+          BASE_REF="${BASE_REF:-main}"
+          echo "Checking DCO sign-off against origin/${BASE_REF}"
+          MERGE_BASE=$(git merge-base HEAD "origin/${BASE_REF}" 2>/dev/null || echo HEAD~1)
+          COMMITS=$(git rev-list "$MERGE_BASE"..HEAD 2>/dev/null || echo "")
+          if [ -z "$COMMITS" ]; then
+            echo "No new commits to check."
+            exit 0
+          fi
+          FAILED=0
+          for sha in $COMMITS; do
+            MSG=$(git log -1 --format="%B" "$sha")
+            if ! echo "$MSG" | grep -q "^Signed-off-by:"; then
+              echo "FAIL: Commit $sha missing DCO sign-off"
+              echo "  Subject: $(git log -1 --format='%s' "$sha")"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "All commits must include a Signed-off-by line."
+            echo "Use: git commit -s -m 'your message'"
+            echo "Or amend: git commit --amend -s --no-edit"
+            exit 1
+          fi
+          echo "OK: All commits have DCO sign-off."
+
+  # ---------------------------------------------------------------------------
+  # Job 9: Dependency license check (Python)
+  # ---------------------------------------------------------------------------
+  license-check-python:
+    name: License Check (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.6.2"
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev pkg-config
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Install pip-licenses
+        run: uv run pip install pip-licenses
+
+      - name: Check Python dependency licenses
+        run: |
+          echo "=== Dependency License Report ==="
+          uv run pip-licenses --format=plain --order=license
+
+          echo ""
+          echo "=== Checking for disallowed licenses ==="
+          DISALLOWED=$(uv run pip-licenses --format=csv | grep -iE 'GPL|AGPL|SSPL|BUSL' | grep -v 'LGPL' || true)
+          if [ -n "$DISALLOWED" ]; then
+            echo "ERROR: Found packages with disallowed licenses:"
+            echo "$DISALLOWED"
+            exit 1
+          fi
+          echo "OK: No disallowed licenses found."
+
+  # ---------------------------------------------------------------------------
+  # Job 10: Dependency license check (UI)
+  # ---------------------------------------------------------------------------
+  license-check-ui:
+    name: License Check (UI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "lts/*"
+          cache: "npm"
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check UI dependency licenses
+        run: |
+          # Dump all licenses as JSON, then validate in Node.
+          # OSRB-approved exceptions are filtered by package name prefix.
+          npx license-checker --json --excludePrivatePackages > /tmp/licenses.json
+
+          node -e '
+            const licenses = require("/tmp/licenses.json");
+            const allowed = new Set([
+              "MIT","Apache-2.0","BSD-2-Clause","BSD-3-Clause","ISC","0BSD",
+              "Unlicense","CC0-1.0","CC-BY-4.0","CC-BY-3.0","Python-2.0",
+              "BlueOak-1.0.0","MPL-2.0"
+            ]);
+            // OSRB-approved exceptions (dynamically linked, reviewed)
+            const excludePrefixes = ["@img/sharp-libvips"];
+            const failures = [];
+            for (const [pkg, info] of Object.entries(licenses)) {
+              const name = pkg.replace(/@[^@]+$/, "");
+              if (excludePrefixes.some(p => name.startsWith(p))) continue;
+              const lic = String(info.licenses || "UNKNOWN");
+              // license-checker appends * when license is inferred from file (e.g. "MIT*")
+              const parts = lic.replace(/[()]/g, "").split(/ OR | AND /);
+              const ok = parts.some(p => allowed.has(p.trim().replace(/\*$/, "")));
+              if (!ok) failures.push(pkg + ": " + lic);
+            }
+            if (failures.length) {
+              console.error("ERROR: " + failures.length + " package(s) with disallowed licenses:\n");
+              failures.forEach(f => console.error("  " + f));
+              process.exit(1);
+            }
+            console.log("OK: " + Object.keys(licenses).length + " packages checked.");
+          '
+
+  # ---------------------------------------------------------------------------
+  # Job 11: Trigger downstream pipeline on main
+  # ---------------------------------------------------------------------------
+  trigger-downstream-pipeline:
+    name: Trigger Downstream Pipeline
+    needs:
+      - lint
+      - typecheck
+      - test
+      - security
+      - frontend-lint
+      - frontend-build
+      - copyright-headers
+      - dco
+      - license-check-python
+      - license-check-ui
+    runs-on: self-hosted
+    timeout-minutes: 10
+    env:
+      DOWNSTREAM_CI_URL: ${{ secrets.DOWNSTREAM_CI_URL }}
+      DOWNSTREAM_CI_TOKEN: ${{ secrets.DOWNSTREAM_CI_TOKEN }}
+      DOWNSTREAM_PROJECT_PATH: hverjus/ci-vss-oss
+      DOWNSTREAM_REF: main
+      DOWNSTREAM_SUBMODULE_HASH_VARIABLE: VSS_SUBMODULE_HASH
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Trigger pipeline
+        run: python3 .github/scripts/trigger-downstream-pipeline.sh

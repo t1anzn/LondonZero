@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "Bash(git init *)",
+      "Bash(git remote *)",
+      "Bash(cp -r /tmp/nvidia-vss/. /home/nvidia/Desktop/londonzero/)",
+      "Bash(rm -rf /home/nvidia/Desktop/londonzero/.git)",
+      "Bash(git branch *)"
+    ]
+  }
+}

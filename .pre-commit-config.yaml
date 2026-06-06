@@ -1,0 +1,27 @@
+# Install both git-hook types when contributors run `pre-commit install`,
+# so the `commit-msg`-stage DCO check (below) is wired up automatically
+# without a second `--hook-type commit-msg` flag.
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: https://github.com/trufflesecurity/trufflehog
+    rev: v3.94.2
+    hooks:
+      - id: trufflehog
+        name: TruffleHog secret scan
+        entry: trufflehog git file://. --since-commit HEAD --results=verified,unknown --fail
+        language: golang
+        stages: [pre-commit]
+
+  - repo: local
+    hooks:
+      # DCO sign-off check — ensures every commit has Signed-off-by.
+      # Runs at `commit-msg` stage so we read the *new* commit's message
+      # (passed in as $1) instead of `git log -1` on the parent — which
+      # was happily inheriting a Signed-off-by from the previous HEAD
+      # and letting unsigned commits through.
+      - id: dco-signoff
+        name: DCO sign-off check
+        entry: bash -c 'grep -q "^Signed-off-by" "$1" || { echo "ERROR - Commit missing DCO sign-off. Use git commit -s"; exit 1; }' --
+        language: system
+        stages: [commit-msg]
