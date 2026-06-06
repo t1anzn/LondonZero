@@ -1,0 +1,26 @@
+# NVIDIA API Catalog endpoints — all via https://integrate.api.nvidia.com/v1
+# API key: set NVIDIA_API_KEY in .env
+# Model IDs sourced from build.nvidia.com/models
+
+orchestrator:
+  model_id: "nvidia/llama-3.1-nemotron-ultra-253b-v1"  # Nemotron Super (cloud)
+  temperature: 0.2
+  max_tokens: 4096
+
+perception_vlm:
+  model_id: "nvidia/cosmos-reason1-8b"  # Cosmos Reasoning 8B — single image VLM
+  temperature: 0.1
+  max_tokens: 2048
+  reasoning: true  # enable <think> trace
+
+# TODO (He Xiao): confirm which model your RAG/feasibility agent uses
+feasibility_llm:
+  model_id: "nvidia/llama-3.3-nemotron-super-49b-v1"  # lighter Nemotron
+  temperature: 0.2
+  max_tokens: 2048
+
+flux:
+  model_id: "black-forest-labs/flux-dev"  # FLUX.1-dev via NVIDIA API
+  # inpainting variant: black-forest-labs/flux-fill-dev (check availability on build.nvidia.com)
+  steps: 30
+  guidance_scale: 7.5

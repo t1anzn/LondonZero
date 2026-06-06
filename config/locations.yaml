@@ -1,0 +1,12 @@
+# MVP target location — Bank Junction, City of London
+# Identified as the City's worst road casualty hotspot (City of London Vision Zero Plan)
+# TODO: extend to multi-location selection when UI heatmap is added
+default_location:
+  name: "Bank Junction"
+  lat: 51.5133
+  lon: -0.0886
+  radius_m: 100
+  notes: >
+    Bank Junction sits at the intersection of Queen Victoria St, King William St,
+    Threadneedle St, Cornhill, and Poultry. High cyclist/pedestrian casualty rate.
+    The 'All Change at Bank' scheme introduced restrictions 2018-2022.
