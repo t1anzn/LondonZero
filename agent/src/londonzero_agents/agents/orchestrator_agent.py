@@ -19,7 +19,6 @@ import logging
 import re
 from collections.abc import AsyncGenerator
 
-from langchain_core.messages import HumanMessage, SystemMessage
 from nat.builder.builder import Builder
 from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
@@ -28,18 +27,12 @@ from nat.data_models.component_ref import FunctionRef, LLMRef
 from nat.data_models.function import FunctionBaseConfig
 from pydantic import BaseModel, Field
 
-from londonzero_agents.agents.data_retrieval_agent import (
-    DataRetrievalAgentInput,
-    DataRetrievalAgentOutput,
-)
-from londonzero_agents.agents.feasibility_agent import FeasibilityAgentInput
-from londonzero_agents.agents.perception_agent import PerceptionAgentInput
-from londonzero_agents.agents.redesign_agent import RedesignAgentInput
+from londonzero_agents.data_models.collision_profile import CollisionProfile
 from londonzero_agents.data_models.feasibility_brief import FeasibilityBrief
 from londonzero_agents.data_models.hazard_assessment import HazardAssessment
 from londonzero_agents.data_models.location import LocationQuery
 from londonzero_agents.data_models.redesign_output import RedesignOutput
-from londonzero_agents.prompt import ORCHESTRATOR_SYSTEM_PROMPT
+from londonzero_agents.pipeline import stream_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +51,12 @@ class OrchestratorConfig(FunctionBaseConfig, name="orchestrator_agent"):
 
 class OrchestratorOutput(BaseModel):
     summary: str
+    # Intermediate agent outputs are retained (not discarded) so the dashboard can
+    # render per-agent transparency cards and the fallback /analyse endpoint can
+    # return the full pipeline result in one payload.
+    collision_profile: CollisionProfile | None = None
+    hazard_assessment: HazardAssessment | None = None
+    feasibility_brief: FeasibilityBrief | None = None
     redesign: RedesignOutput | None = None
     session_id: str | None = None
 
@@ -79,60 +78,38 @@ async def run_orchestrator(config: OrchestratorConfig, builder: Builder) -> Asyn
             radius_m=config.location_radius_m,
         )
 
-        # ── Step 1: Data Retrieval ──────────────────────────────────────────
-        logger.info("Orchestrator: running data_retrieval_agent for %s", loc.name)
-        data_result = await data_fn.ainvoke(
-            DataRetrievalAgentInput(location=loc),
-            to_type=DataRetrievalAgentOutput,
-        )
+        # Drive the shared pipeline (same generator the SSE endpoint streams) and
+        # collect its final assembled result.
+        result: dict = {}
+        async for event in stream_pipeline(
+            data_fn=data_fn,
+            perception_fn=perception_fn,
+            feasibility_fn=feasibility_fn,
+            redesign_fn=redesign_fn,
+            llm=llm,
+            loc=loc,
+            query=query,
+        ):
+            if event["type"] == "status":
+                logger.info("Orchestrator: %s %s", event["stage"], event["state"])
+            elif event["type"] == "done":
+                result = event["payload"]
 
-        # ── Step 2: Perception ─────────────────────────────────────────────
-        logger.info("Orchestrator: running perception_agent")
-        hazard_result = await perception_fn.ainvoke(
-            PerceptionAgentInput(
-                image_url=data_result.image_url,
-                collision_profile=data_result.collision_profile,
-            ),
-            to_type=HazardAssessment,
-        )
-
-        # ── Step 3: Feasibility ────────────────────────────────────────────
-        logger.info("Orchestrator: running feasibility_agent")
-        feasibility_result = await feasibility_fn.ainvoke(
-            FeasibilityAgentInput(
-                collision_profile=data_result.collision_profile,
-                hazard_assessment=hazard_result,
-            ),
-            to_type=FeasibilityBrief,
-        )
-
-        # ── Step 4: Redesign ───────────────────────────────────────────────
-        logger.info("Orchestrator: running redesign_agent")
-        redesign_result = await redesign_fn.ainvoke(
-            RedesignAgentInput(
-                image_url=data_result.image_url,
-                feasibility_brief=feasibility_result,
-            ),
-            to_type=RedesignOutput,
-        )
-
-        # ── Step 5: Final synthesis with Nemotron Super ────────────────────
-        synthesis_prompt = _build_synthesis_prompt(
-            query, data_result, hazard_result, feasibility_result
-        )
-        messages = [
-            SystemMessage(content=ORCHESTRATOR_SYSTEM_PROMPT),
-            HumanMessage(content=synthesis_prompt),
-        ]
-        response = await llm.ainvoke(messages)
-        summary = response.content if isinstance(response.content, str) else str(response.content)
+        summary = result["summary"]
+        redesign_result = result["redesign"]
 
         # Persist the FLUX redesign so it can be viewed / served to the dashboard.
         image_path = _save_redesign_image(redesign_result, config.location_name)
         if image_path:
             summary = f"{summary}\n\nRedesign image saved to: {image_path}"
 
-        return OrchestratorOutput(summary=summary, redesign=redesign_result)
+        return OrchestratorOutput(
+            summary=summary,
+            collision_profile=result["collision_profile"],
+            hazard_assessment=result["hazard_assessment"],
+            feasibility_brief=result["feasibility_brief"],
+            redesign=redesign_result,
+        )
 
     yield FunctionInfo.create(
         single_fn=_run,
@@ -165,20 +142,3 @@ def _save_redesign_image(redesign: RedesignOutput | None, location_name: str) ->
     except Exception as exc:  # noqa: BLE001 — saving is best-effort
         logger.warning("Could not save redesign image: %s", exc)
         return None
-
-
-def _build_synthesis_prompt(query, data_result, hazard_result, feasibility_result) -> str:
-    return (
-        f"User question: {query}\n\n"
-        f"Location: {data_result.collision_profile.location}\n"
-        f"Collisions: {data_result.collision_profile.total_collisions} total "
-        f"({data_result.collision_profile.fatal} fatal, "
-        f"{data_result.collision_profile.serious} serious)\n"
-        f"Cyclist involvement: {data_result.collision_profile.cyclist_involved_pct:.0%}\n\n"
-        f"Identified hazards:\n" + "\n".join(f"- {h}" for h in hazard_result.hazards) + "\n\n"
-        f"Recommended intervention: {feasibility_result.recommended_intervention}\n"
-        f"Design brief: {feasibility_result.design_brief}\n\n"
-        f"Confidence notes: {feasibility_result.confidence_notes}\n\n"
-        "Synthesise the above into a clear, plain-English recommendation for a city planner. "
-        "Cite evidence. Do not overclaim causality."
-    )

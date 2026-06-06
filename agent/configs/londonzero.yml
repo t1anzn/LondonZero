@@ -46,10 +46,20 @@ functions:
     _type: perception_agent
     image_tool: image_understanding
 
-  # ── Feasibility (He Xiao) — lighter Nemotron ─────────────────────────────
+  # ── Feasibility (He Xiao) — lighter Nemotron + NVIDIA-embedding RAG ───────
+  guidance_rag:
+    _type: guidance_rag
+    rag_data_dir: data/rag
+    top_k: 4
+    embedding_model: nvidia/nv-embedqa-e5-v5
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key: ${NVIDIA_API_KEY}
+
   feasibility_agent:
     _type: feasibility_agent
     llm_name: feasibility_llm
+    guidance_tool: guidance_rag
+    use_rag: true
     use_llm: true
 
   # ── Redesign (Nishit) — local FLUX-Fill on GB10 ──────────────────────────

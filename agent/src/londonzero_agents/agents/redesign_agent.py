@@ -18,7 +18,6 @@ from nat.data_models.component_ref import FunctionRef
 from nat.data_models.function import FunctionBaseConfig
 from pydantic import BaseModel, Field
 
-from londonzero_agents.data_models.feasibility_brief import FeasibilityBrief
 from londonzero_agents.data_models.redesign_output import RedesignOutput
 from londonzero_agents.tools.flux_inpaint import FluxInpaintInput
 
@@ -31,7 +30,13 @@ class RedesignAgentConfig(FunctionBaseConfig, name="redesign_agent"):
 
 class RedesignAgentInput(BaseModel):
     image_url: str = Field(description="Mapillary base image to inpaint")
-    feasibility_brief: FeasibilityBrief
+    design_brief: str = Field(
+        description="Visual design brief that drives the FLUX inpaint prompt — "
+        "the orchestrator's final recommendation, distilled for image generation"
+    )
+    explanation: str = Field(
+        default="", description="Plain-English explanation shown alongside the redesign"
+    )
 
 
 @register_function(config_type=RedesignAgentConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
@@ -45,8 +50,8 @@ async def run_redesign_agent(
         return await flux_fn.ainvoke(
             FluxInpaintInput(
                 image_url=input.image_url,
-                design_brief=input.feasibility_brief.design_brief,
-                explanation=input.feasibility_brief.plain_explanation,
+                design_brief=input.design_brief,
+                explanation=input.explanation,
             ),
             to_type=RedesignOutput,
         )

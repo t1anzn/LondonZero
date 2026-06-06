@@ -21,7 +21,7 @@ from nat.builder.builder import Builder
 from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
-from nat.data_models.component_ref import LLMRef
+from nat.data_models.component_ref import FunctionRef, LLMRef
 from nat.data_models.function import FunctionBaseConfig
 from pydantic import BaseModel, Field
 
@@ -29,15 +29,20 @@ from londonzero_agents.data_models.collision_profile import CollisionProfile
 from londonzero_agents.data_models.feasibility_brief import FeasibilityBrief
 from londonzero_agents.data_models.hazard_assessment import HazardAssessment
 from londonzero_agents.prompt import FEASIBILITY_SYSTEM_PROMPT
+from londonzero_agents.tools.guidance_rag import GuidanceRagInput, GuidanceRagOutput
 
 logger = logging.getLogger(__name__)
 
 
 class FeasibilityAgentConfig(FunctionBaseConfig, name="feasibility_agent"):
     llm_name: LLMRef = Field(..., description="LLM for feasibility reasoning (lighter Nemotron)")
-    rag_data_dir: str = Field(
-        default="data/rag",
-        description="Reserved directory for local RAG context and policy docs",
+    guidance_tool: FunctionRef = Field(
+        default="guidance_rag",
+        description="RAG tool that retrieves TfL / London planning guidance to ground the brief",
+    )
+    use_rag: bool = Field(
+        default=True,
+        description="Whether to retrieve and apply planning guidance via the RAG tool",
     )
     use_llm: bool = Field(
         default=True,
@@ -198,6 +203,22 @@ def _build_confidence_notes(profile: CollisionProfile, hazards: HazardAssessment
     return " ".join(notes)
 
 
+def _build_guidance_query(
+    profile: CollisionProfile,
+    hazards: HazardAssessment,
+    intervention: str,
+) -> str:
+    parts = [intervention, f"{profile.location} junction safety intervention"]
+    if profile.cyclist_involved_pct >= 0.2:
+        parts.append("cyclist protection separation cycle lane")
+    if profile.pedestrian_involved_pct >= 0.2:
+        parts.append("pedestrian crossing visibility")
+    if (hazards.junction_complexity or "").lower() == "high":
+        parts.append("complex multi-arm junction simplification")
+    parts.extend(hazards.missing_infrastructure[:3])
+    return ". ".join(p for p in parts if p)
+
+
 def _build_llm_refinement_prompt(
     profile: CollisionProfile,
     hazards: HazardAssessment,
@@ -207,7 +228,13 @@ def _build_llm_refinement_prompt(
     feasibility_score: float,
     design_brief: str,
     plain_explanation: str,
+    guidance_text: str = "",
 ) -> str:
+    guidance_block = (
+        f"\nRelevant planning guidance (TfL / LCDS / City of London):\n{guidance_text}\n"
+        if guidance_text
+        else ""
+    )
     return (
         f"Location: {profile.location}\n"
         f"Collision summary: {profile.total_collisions} total, {profile.fatal} fatal, {profile.serious} serious, {profile.slight} slight.\n"
@@ -217,10 +244,12 @@ def _build_llm_refinement_prompt(
         f"Risk factors: {', '.join(risk_factors) if risk_factors else 'none'}\n"
         f"Constraints: {', '.join(constraints) if constraints else 'none'}\n"
         f"Selected intervention: {intervention}\n"
-        f"Feasibility score: {feasibility_score:.2f}\n\n"
+        f"Feasibility score: {feasibility_score:.2f}\n"
+        f"{guidance_block}\n"
         f"Draft design brief: {design_brief}\n"
         f"Draft explanation: {plain_explanation}\n\n"
         "Rewrite the design brief in concise planning language for a downstream visual redesign agent. "
+        "Where the planning guidance above is relevant, align the brief with it. "
         "Do not invent new facts, do not change the intervention, and do not return JSON. "
         "Keep the result to 4-6 sentences and avoid bullet points."
     )
@@ -232,6 +261,7 @@ async def run_feasibility_agent(
     builder: Builder,
 ) -> AsyncGenerator[FunctionInfo]:
     llm = await builder.get_llm(config.llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+    guidance_fn = await builder.get_function(config.guidance_tool) if config.use_rag else None
 
     async def _run(input: FeasibilityAgentInput) -> FeasibilityBrief:
         risk_factors = _derive_risk_factors(input.collision_profile, input.hazard_assessment)
@@ -251,6 +281,26 @@ async def run_feasibility_agent(
             feasibility_score,
         )
 
+        # ── RAG: ground the brief in TfL / London planning guidance ──────────
+        guidance_citations: list[str] = []
+        guidance_text = ""
+        if guidance_fn is not None:
+            try:
+                query = _build_guidance_query(
+                    input.collision_profile, input.hazard_assessment, recommended_intervention
+                )
+                rag_result = await guidance_fn.ainvoke(
+                    GuidanceRagInput(query=query), to_type=GuidanceRagOutput
+                )
+                guidance_citations = [
+                    f"{s.source}: {s.text}" for s in rag_result.snippets
+                ]
+                guidance_text = "\n".join(
+                    f"- ({s.source}) {s.text}" for s in rag_result.snippets
+                )
+            except Exception as exc:  # pragma: no cover - environment-specific
+                logger.warning("feasibility_agent: guidance retrieval skipped: %s", exc)
+
         llm_used = False
         if config.use_llm:
             try:
@@ -267,6 +317,7 @@ async def run_feasibility_agent(
                                 feasibility_score,
                                 design_brief,
                                 plain_explanation,
+                                guidance_text,
                             )
                         ),
                     ]
@@ -287,6 +338,7 @@ async def run_feasibility_agent(
             design_brief=design_brief,
             plain_explanation=plain_explanation,
             confidence_notes=_build_confidence_notes(input.collision_profile, input.hazard_assessment, llm_used),
+            guidance_citations=guidance_citations,
         )
 
     yield FunctionInfo.create(

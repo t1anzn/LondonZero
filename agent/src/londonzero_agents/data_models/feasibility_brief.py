@@ -30,3 +30,8 @@ class FeasibilityBrief(BaseModel):
     confidence_notes: str = Field(
         default="", description="Uncertainty and data-gap caveats"
     )
+    guidance_citations: list[str] = Field(
+        default_factory=list,
+        description="TfL / London planning guidance snippets ('source: text') retrieved via RAG "
+        "that ground this brief",
+    )
