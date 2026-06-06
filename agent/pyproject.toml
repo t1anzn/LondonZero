@@ -48,6 +48,12 @@ name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+[[tool.uv.index]]
+# CUDA 13 wheels for aarch64 (GB10 / Grace-Blackwell) so FLUX-Fill can run on GPU
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
 
 
 [project]
@@ -60,6 +66,8 @@ dependencies = [
   # `~=0.1.3.5`.
   # Keep sorted!!!
   # s3 for s3 object store
+  "accelerate>=1.0.0",       # LondonZero: FLUX-Fill local inference
+  "diffusers>=0.38.0",       # LondonZero: FLUX-Fill local inference
   "docker>=7.1.0",
   "duckdb>=1.5.0.dev44",
   "langchain-core >= 1.2.11",
@@ -70,10 +78,13 @@ dependencies = [
   "mcp >= 1.23.0",
   "nvidia-nat[async-endpoints,langchain,mcp,opentelemetry,phoenix,profiling,s3]==1.5.0a20260218",
   "opencv-python-headless>=4.13.0.92",
+  "osmium>=4.0.0",           # LondonZero: aggregate_context OSM enrichment
+  "pandas>=2.2.0",           # LondonZero: STATS19 loader
   "protobuf>=6.33.5",
   "pydantic >=2.11,<3",
   "python-multipart>=0.0.22",
   "sentence-transformers>=3.0.0",
+  "sentencepiece>=0.2.0",    # LondonZero: FLUX-Fill T5 tokenizer
   "starlette >= 0.49.1",
   "tiktoken>=0.9.0",
   "torch>=2.5.0",
@@ -127,6 +138,9 @@ vss_api = "vss_agents.api.register"
 vss_va_mcp = "vss_agents.video_analytics.tools"
 vss_evaluators = "vss_agents.evaluators.register"
 vst_tools = "vss_agents.tools.vst.register"
+# LondonZero road-safety pipeline — importing these modules triggers @register_function
+londonzero_tools = "londonzero_agents.tools"
+londonzero_agents = "londonzero_agents.agents"
 
 
 
@@ -134,7 +148,8 @@ vst_tools = "vss_agents.tools.vst.register"
 # nvidia index currently only has langchain-nvidia-ai-endpoints up to 1.0.3; source = pypi so uv gets versions >1.0.3 from PyPI
 langchain-nvidia-ai-endpoints = { index = "pypi" }
 torch = [
-    { index = "pytorch-cpu", marker = "platform_machine == 'x86_64' or platform_machine == 'aarch64'" },
+    { index = "pytorch-cu130", marker = "platform_machine == 'aarch64'" },
+    { index = "pytorch-cpu", marker = "platform_machine == 'x86_64'" },
 ]
 torchvision = [
     { index = "pytorch-cpu", marker = "platform_machine == 'x86_64' or platform_machine == 'aarch64'" },

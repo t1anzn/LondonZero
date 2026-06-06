@@ -1,0 +1,96 @@
+# LondonZero — NVIDIA NeMo Agent Toolkit (nvidia-nat) workflow config
+# Run:  cd agent && set -a && . ../.env && set +a && uv run nat run --config_file configs/londonzero.yml --input "Why is this junction risky and what would make it safer?"
+#
+# All models via the NVIDIA API Catalog (https://integrate.api.nvidia.com/v1), except
+# the redesign step which runs FLUX-Fill LOCALLY via diffusers on the GB10 GPU.
+
+general:
+  use_uvloop: true
+
+functions:
+  # ── Data layer (Jas/Balmee) ──────────────────────────────────────────────
+  load_collision_data:
+    _type: load_collision_data
+    data_dir: data/stats19
+    local_authority_code: E09000001
+
+  aggregate_context:
+    _type: aggregate_context
+    osm_pbf_path: data/osm/greater-london-latest.osm.pbf
+    osm_radius_m: 120
+
+  mapillary_search:
+    _type: mapillary_search
+    access_token: ${MAPILLARY_ACCESS_TOKEN}
+    image_width: 1024
+
+  data_retrieval_agent:
+    _type: data_retrieval_agent
+    collision_tool: load_collision_data
+    mapillary_tool: mapillary_search
+    aggregate_tool: aggregate_context
+
+  # ── Perception (Nishit) — Cosmos VLM ─────────────────────────────────────
+  image_understanding:
+    _type: image_understanding
+    # cosmos-reason2-8b is catalog-listed but NOT deployed for this account (404);
+    # nemotron-nano-12b-v2-vl is the strongest VLM actually runnable on this key.
+    model_name: nvidia/nemotron-nano-12b-v2-vl
+    api_key: ${NVIDIA_API_KEY}
+    base_url: https://integrate.api.nvidia.com/v1/chat/completions
+    reasoning: true
+    max_tokens: 2048
+    temperature: 0.2
+
+  perception_agent:
+    _type: perception_agent
+    image_tool: image_understanding
+
+  # ── Feasibility (He Xiao) — lighter Nemotron ─────────────────────────────
+  feasibility_agent:
+    _type: feasibility_agent
+    llm_name: feasibility_llm
+    use_llm: true
+
+  # ── Redesign (Nishit) — local FLUX-Fill on GB10 ──────────────────────────
+  flux_inpaint:
+    _type: flux_inpaint
+    model_id: black-forest-labs/FLUX.1-Fill-dev
+    steps: 30
+    guidance_scale: 30.0
+
+  redesign_agent:
+    _type: redesign_agent
+    flux_tool: flux_inpaint
+
+llms:
+  orchestrator_llm:
+    _type: nim
+    # nemotron-ultra-253b is catalog-listed but NOT deployed for this account (404);
+    # super-49b is confirmed runnable and ample for the synthesis step.
+    model_name: nvidia/llama-3.3-nemotron-super-49b-v1
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    max_tokens: 4096
+
+  feasibility_llm:
+    _type: nim
+    model_name: nvidia/llama-3.3-nemotron-super-49b-v1
+    base_url: https://integrate.api.nvidia.com/v1
+    api_key: ${NVIDIA_API_KEY}
+    temperature: 0.2
+    max_tokens: 2048
+
+# ── Workflow entrypoint — the orchestrator coordinates the full pipeline ─────
+workflow:
+  _type: orchestrator_agent
+  llm_name: orchestrator_llm
+  data_retrieval_tool: data_retrieval_agent
+  perception_tool: perception_agent
+  feasibility_tool: feasibility_agent
+  redesign_tool: redesign_agent
+  location_name: Bank Junction
+  location_lat: 51.5133
+  location_lon: -0.0886
+  location_radius_m: 100

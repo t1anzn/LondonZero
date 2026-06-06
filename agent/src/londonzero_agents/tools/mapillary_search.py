@@ -14,9 +14,12 @@ Requires: MAPILLARY_ACCESS_TOKEN in environment.
 import logging
 import math
 import os
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 
 import aiohttp
+from nat.builder.builder import Builder
+from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
@@ -67,51 +70,54 @@ def _to_iso(captured_at) -> str | None:
         return str(captured_at)
 
 
-@register_function(
-    FunctionInfo(
-        name="mapillary_search",
+@register_function(config_type=MapillarySearchConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
+async def mapillary_search(
+    config: MapillarySearchConfig,
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    async def _run(input: MapillarySearchInput) -> MapillarySearchOutput:
+        loc = input.location
+        thumb_field = f"thumb_{config.image_width}_url"
+        params = {
+            "access_token": config.access_token,
+            "bbox": _bbox(loc.lat, loc.lon, loc.radius_m),
+            "fields": f"id,geometry,is_pano,captured_at,compass_angle,{thumb_field}",
+            "limit": 50,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{MAPILLARY_API_BASE}/images", params=params) as resp:
+                resp.raise_for_status()
+                images = (await resp.json()).get("data", [])
+
+        # Prefer flat images; fall back to whatever exists (incl. panos) if that's all there is.
+        flat = [im for im in images if not im.get("is_pano")] or images
+        if not flat:
+            raise RuntimeError(f"Mapillary returned no images within {loc.radius_m} m of {loc.name}")
+
+        def _dist(im: dict) -> float:
+            x, y = im["geometry"]["coordinates"]  # [lon, lat]
+            return math.hypot((y - loc.lat) * 111_000, (x - loc.lon) * 111_000 * math.cos(math.radians(loc.lat)))
+
+        best = min(flat, key=_dist)
+        bx, by = best["geometry"]["coordinates"]
+        logger.info("mapillary_search: chose image %s near %s", best["id"], loc.name)
+
+        return MapillarySearchOutput(
+            image_url=best[thumb_field],
+            image_id=str(best["id"]),
+            captured_at=_to_iso(best.get("captured_at")),
+            compass_angle=best.get("compass_angle"),
+            lat=by,
+            lon=bx,
+        )
+
+    yield FunctionInfo.create(
+        single_fn=_run,
         description=(
             "Search Mapillary for the best street-level image near a location "
             "and return its URL for VLM analysis."
         ),
-    )
-)
-async def mapillary_search(
-    config: MapillarySearchConfig,
-    input: MapillarySearchInput,
-) -> MapillarySearchOutput:
-    loc = input.location
-    thumb_field = f"thumb_{config.image_width}_url"
-    params = {
-        "access_token": config.access_token,
-        "bbox": _bbox(loc.lat, loc.lon, loc.radius_m),
-        "fields": f"id,geometry,is_pano,captured_at,compass_angle,{thumb_field}",
-        "limit": 50,
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"{MAPILLARY_API_BASE}/images", params=params) as resp:
-            resp.raise_for_status()
-            images = (await resp.json()).get("data", [])
-
-    # Prefer flat images; fall back to whatever exists (incl. panos) if that's all there is.
-    flat = [im for im in images if not im.get("is_pano")] or images
-    if not flat:
-        raise RuntimeError(f"Mapillary returned no images within {loc.radius_m} m of {loc.name}")
-
-    def _dist(im: dict) -> float:
-        x, y = im["geometry"]["coordinates"]  # [lon, lat]
-        return math.hypot((y - loc.lat) * 111_000, (x - loc.lon) * 111_000 * math.cos(math.radians(loc.lat)))
-
-    best = min(flat, key=_dist)
-    bx, by = best["geometry"]["coordinates"]
-    logger.info("mapillary_search: chose image %s near %s", best["id"], loc.name)
-
-    return MapillarySearchOutput(
-        image_url=best[thumb_field],
-        image_id=str(best["id"]),
-        captured_at=_to_iso(best.get("captured_at")),
-        compass_angle=best.get("compass_angle"),
-        lat=by,
-        lon=bx,
+        input_schema=MapillarySearchInput,
+        single_output_schema=MapillarySearchOutput,
     )

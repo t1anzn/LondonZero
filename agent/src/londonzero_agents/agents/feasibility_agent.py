@@ -13,6 +13,7 @@ with orchestrator_agent.py which calls this function by name):
   Output: FeasibilityBrief
 """
 
+from collections.abc import AsyncGenerator
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -225,71 +226,75 @@ def _build_llm_refinement_prompt(
     )
 
 
-@register_function(
-    FunctionInfo(
-        name="feasibility_agent",
+@register_function(config_type=FeasibilityAgentConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
+async def run_feasibility_agent(
+    config: FeasibilityAgentConfig,
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    llm = await builder.get_llm(config.llm_name, wrapper_type=LLMFrameworkEnum.LANGCHAIN)
+
+    async def _run(input: FeasibilityAgentInput) -> FeasibilityBrief:
+        risk_factors = _derive_risk_factors(input.collision_profile, input.hazard_assessment)
+        constraints = _derive_constraints(input.collision_profile, input.hazard_assessment)
+        feasibility_score = _compute_feasibility_score(input.collision_profile, input.hazard_assessment)
+        recommended_intervention = _select_intervention(input.collision_profile, input.hazard_assessment)
+
+        design_brief = _build_design_brief(
+            input.collision_profile,
+            risk_factors,
+            constraints,
+            recommended_intervention,
+        )
+        plain_explanation = _build_plain_explanation(
+            input.collision_profile,
+            recommended_intervention,
+            feasibility_score,
+        )
+
+        llm_used = False
+        if config.use_llm:
+            try:
+                response = await llm.ainvoke(
+                    [
+                        SystemMessage(content=FEASIBILITY_SYSTEM_PROMPT),
+                        HumanMessage(
+                            content=_build_llm_refinement_prompt(
+                                input.collision_profile,
+                                input.hazard_assessment,
+                                risk_factors,
+                                constraints,
+                                recommended_intervention,
+                                feasibility_score,
+                                design_brief,
+                                plain_explanation,
+                            )
+                        ),
+                    ]
+                )
+                response_text = response.content if isinstance(response.content, str) else str(response.content)
+                refined_text = response_text.strip()
+                if refined_text:
+                    design_brief = refined_text
+                    llm_used = True
+            except Exception as exc:  # pragma: no cover - network/model failures are environment-specific
+                logger.warning("feasibility_agent: LLM refinement skipped: %s", exc)
+
+        return FeasibilityBrief(
+            risk_factors=risk_factors,
+            infrastructure_constraints=constraints,
+            feasibility_score=feasibility_score,
+            recommended_intervention=recommended_intervention,
+            design_brief=design_brief,
+            plain_explanation=plain_explanation,
+            confidence_notes=_build_confidence_notes(input.collision_profile, input.hazard_assessment, llm_used),
+        )
+
+    yield FunctionInfo.create(
+        single_fn=_run,
         description=(
             "Assess infrastructure intervention feasibility from collision evidence "
             "and street-level hazards. Returns a design brief for the road redesign agent."
         ),
-    )
-)
-async def run_feasibility_agent(
-    config: FeasibilityAgentConfig,
-    input: FeasibilityAgentInput,
-) -> FeasibilityBrief:
-    risk_factors = _derive_risk_factors(input.collision_profile, input.hazard_assessment)
-    constraints = _derive_constraints(input.collision_profile, input.hazard_assessment)
-    feasibility_score = _compute_feasibility_score(input.collision_profile, input.hazard_assessment)
-    recommended_intervention = _select_intervention(input.collision_profile, input.hazard_assessment)
-
-    design_brief = _build_design_brief(
-        input.collision_profile,
-        risk_factors,
-        constraints,
-        recommended_intervention,
-    )
-    plain_explanation = _build_plain_explanation(
-        input.collision_profile,
-        recommended_intervention,
-        feasibility_score,
-    )
-
-    llm_used = False
-    if config.use_llm:
-        try:
-            llm = Builder.get_llm(LLMFrameworkEnum.LANGCHAIN, config.llm_name)
-            response = await llm.ainvoke(
-                [
-                    SystemMessage(content=FEASIBILITY_SYSTEM_PROMPT),
-                    HumanMessage(
-                        content=_build_llm_refinement_prompt(
-                            input.collision_profile,
-                            input.hazard_assessment,
-                            risk_factors,
-                            constraints,
-                            recommended_intervention,
-                            feasibility_score,
-                            design_brief,
-                            plain_explanation,
-                        )
-                    ),
-                ]
-            )
-            response_text = response.content if isinstance(response.content, str) else str(response.content)
-            refined_text = response_text.strip()
-            if refined_text:
-                design_brief = refined_text
-                llm_used = True
-        except Exception as exc:  # pragma: no cover - network/model failures are environment-specific
-            logger.warning("feasibility_agent: LLM refinement skipped: %s", exc)
-
-    return FeasibilityBrief(
-        risk_factors=risk_factors,
-        infrastructure_constraints=constraints,
-        feasibility_score=feasibility_score,
-        recommended_intervention=recommended_intervention,
-        design_brief=design_brief,
-        plain_explanation=plain_explanation,
-        confidence_notes=_build_confidence_notes(input.collision_profile, input.hazard_assessment, llm_used),
+        input_schema=FeasibilityAgentInput,
+        single_output_schema=FeasibilityBrief,
     )

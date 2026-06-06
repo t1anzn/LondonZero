@@ -18,7 +18,10 @@ import base64
 import io
 import logging
 import urllib.request
+from collections.abc import AsyncGenerator
 
+from nat.builder.builder import Builder
+from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
@@ -100,35 +103,38 @@ def _build_inpaint_prompt(design_brief: str) -> str:
     )
 
 
-@register_function(
-    FunctionInfo(
-        name="flux_inpaint",
+@register_function(config_type=FluxInpaintConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
+async def flux_inpaint(
+    config: FluxInpaintConfig,
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    async def _run(input: FluxInpaintInput) -> RedesignOutput:
+        prompt = _build_inpaint_prompt(input.design_brief)
+
+        # Fetch the base image, then run the heavy GPU inpaint off the event loop.
+        def _fetch(url: str) -> bytes:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read()
+
+        image_bytes = await asyncio.to_thread(_fetch, input.image_url)
+        result_b64 = await asyncio.to_thread(
+            _render_sync, image_bytes, prompt, config.model_id, config.steps, config.guidance_scale
+        )
+
+        return RedesignOutput(
+            original_image_url=input.image_url,
+            redesigned_image_b64=result_b64,
+            inpaint_prompt=prompt,
+            design_brief=input.design_brief,
+            explanation=input.explanation,
+        )
+
+    yield FunctionInfo.create(
+        single_fn=_run,
         description=(
             "Inpaint a Mapillary street image with local FLUX-Fill to visualise the road "
             "redesign from the feasibility agent's design brief."
         ),
-    )
-)
-async def flux_inpaint(
-    config: FluxInpaintConfig,
-    input: FluxInpaintInput,
-) -> RedesignOutput:
-    prompt = _build_inpaint_prompt(input.design_brief)
-
-    # Fetch the base image, then run the heavy GPU inpaint off the event loop.
-    def _fetch(url: str) -> bytes:
-        with urllib.request.urlopen(url, timeout=60) as r:
-            return r.read()
-
-    image_bytes = await asyncio.to_thread(_fetch, input.image_url)
-    result_b64 = await asyncio.to_thread(
-        _render_sync, image_bytes, prompt, config.model_id, config.steps, config.guidance_scale
-    )
-
-    return RedesignOutput(
-        original_image_url=input.image_url,
-        redesigned_image_b64=result_b64,
-        inpaint_prompt=prompt,
-        design_brief=input.design_brief,
-        explanation=input.explanation,
+        input_schema=FluxInpaintInput,
+        single_output_schema=RedesignOutput,
     )

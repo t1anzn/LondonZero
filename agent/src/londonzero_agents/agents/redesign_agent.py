@@ -8,21 +8,25 @@ Responsibilities:
 """
 
 import logging
+from collections.abc import AsyncGenerator
 
+from nat.builder.builder import Builder
+from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
+from nat.data_models.component_ref import FunctionRef
 from nat.data_models.function import FunctionBaseConfig
 from pydantic import BaseModel, Field
 
 from londonzero_agents.data_models.feasibility_brief import FeasibilityBrief
 from londonzero_agents.data_models.redesign_output import RedesignOutput
-from londonzero_agents.tools.flux_inpaint import FluxInpaintConfig, FluxInpaintInput, flux_inpaint
+from londonzero_agents.tools.flux_inpaint import FluxInpaintInput
 
 logger = logging.getLogger(__name__)
 
 
 class RedesignAgentConfig(FunctionBaseConfig, name="redesign_agent"):
-    flux: FluxInpaintConfig = Field(default_factory=FluxInpaintConfig)
+    flux_tool: FunctionRef = Field(default="flux_inpaint")
 
 
 class RedesignAgentInput(BaseModel):
@@ -30,24 +34,29 @@ class RedesignAgentInput(BaseModel):
     feasibility_brief: FeasibilityBrief
 
 
-@register_function(
-    FunctionInfo(
-        name="redesign_agent",
+@register_function(config_type=RedesignAgentConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
+async def run_redesign_agent(
+    config: RedesignAgentConfig,
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    flux_fn = await builder.get_function(config.flux_tool)
+
+    async def _run(input: RedesignAgentInput) -> RedesignOutput:
+        return await flux_fn.ainvoke(
+            FluxInpaintInput(
+                image_url=input.image_url,
+                design_brief=input.feasibility_brief.design_brief,
+                explanation=input.feasibility_brief.plain_explanation,
+            ),
+            to_type=RedesignOutput,
+        )
+
+    yield FunctionInfo.create(
+        single_fn=_run,
         description=(
             "Generate a visual road redesign by inpainting a Mapillary image with FLUX, "
             "guided by the feasibility agent's design brief."
         ),
-    )
-)
-async def run_redesign_agent(
-    config: RedesignAgentConfig,
-    input: RedesignAgentInput,
-) -> RedesignOutput:
-    return await flux_inpaint(
-        config.flux,
-        FluxInpaintInput(
-            image_url=input.image_url,
-            design_brief=input.feasibility_brief.design_brief,
-            explanation=input.feasibility_brief.plain_explanation,
-        ),
+        input_schema=RedesignAgentInput,
+        single_output_schema=RedesignOutput,
     )

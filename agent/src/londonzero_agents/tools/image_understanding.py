@@ -16,11 +16,13 @@ import json
 import logging
 import os
 import re
+from collections.abc import AsyncGenerator
 
 import aiohttp
+from nat.builder.builder import Builder
+from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
-from nat.data_models.component_ref import LLMRef
 from nat.data_models.function import FunctionBaseConfig
 from pydantic import BaseModel, Field
 
@@ -71,16 +73,13 @@ def _parse_hazard_json(answer: str) -> dict:
 
 
 class ImageUnderstandingConfig(FunctionBaseConfig, name="image_understanding"):
-    # vlm_name kept so perception_agent/orchestrator keep constructing this unchanged;
-    # in the cloud-direct path the model is selected by model_id below.
-    vlm_name: LLMRef = Field(..., description="(legacy NAT ref — ignored in cloud-direct mode)")
     reasoning: bool = Field(default=True, description="Ask Cosmos for a <think> reasoning trace")
     # Cosmos-Reason2 is listed on the catalog but NOT enabled for hosted inference on this
     # account (404 "Function not found"). nvidia/nemotron-nano-12b-v2-vl IS hosted and is
     # NVIDIA-built. The proven LOCAL Spark path still uses real Cosmos (see junction_audit.py).
-    model_id: str = Field(
-        default="nvidia/nemotron-nano-12b-v2-vl",
-        description="Hosted VLM id (e.g. nvidia/nemotron-nano-12b-v2-vl or meta/llama-3.2-90b-vision-instruct)",
+    model_name: str = Field(
+        default="nvidia/cosmos-reason1-8b",
+        description="Hosted VLM id (e.g. nvidia/cosmos-reason1-8b or meta/llama-3.2-90b-vision-instruct)",
     )
     api_key: str = Field(
         default_factory=lambda: os.environ.get("NVIDIA_API_KEY", ""),
@@ -101,65 +100,68 @@ class ImageUnderstandingInput(BaseModel):
     )
 
 
-@register_function(
-    FunctionInfo(
-        name="image_understanding",
+@register_function(config_type=ImageUnderstandingConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
+async def image_understanding(
+    config: ImageUnderstandingConfig,
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    async def _run(input: ImageUnderstandingInput) -> HazardAssessment:
+        # 1. Fetch the Mapillary image and base64-encode it (catalog accepts JPG/PNG).
+        async with aiohttp.ClientSession() as session:
+            async with session.get(input.image_url) as resp:
+                resp.raise_for_status()
+                image_bytes = await resp.read()
+        image_b64 = base64.b64encode(image_bytes).decode()
+
+        # 2. Build the OpenAI-compatible payload: image + collision-aware prompt + JSON format ask.
+        full_prompt = input.prompt + _FORMAT_INSTRUCTION
+        payload = {
+            "model": config.model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                        {"type": "text", "text": full_prompt},
+                    ],
+                }
+            ],
+            "max_tokens": config.max_tokens,
+            "temperature": config.temperature,
+            # Local Cosmos needed repetition_penalty/no_repeat_ngram to stop hazard-loops; on the
+            # OpenAI-compatible cloud API the nearest knob is frequency_penalty.
+            "frequency_penalty": 0.3,
+        }
+        headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+
+        # 3. Call the hosted VLM.
+        async with aiohttp.ClientSession() as session:
+            async with session.post(config.base_url, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        raw_content = data["choices"][0]["message"]["content"]
+
+        # 4. Split reasoning vs answer, parse the answer JSON into the structured fields.
+        thinking, answer = _split_think_answer(raw_content)
+        parsed = _parse_hazard_json(answer)
+        hazards = parsed.get("hazards") or ([answer] if answer else [])
+
+        return HazardAssessment(
+            image_url=input.image_url,
+            hazards=hazards if isinstance(hazards, list) else [str(hazards)],
+            missing_infrastructure=parsed.get("missing_infrastructure") or [],
+            visibility_issues=parsed.get("visibility_issues") or [],
+            junction_complexity=parsed.get("junction_complexity"),
+            vlm_reasoning=thinking,
+            raw_vlm_response=raw_content,
+        )
+
+    yield FunctionInfo.create(
+        single_fn=_run,
         description=(
             "Analyse a single street-level image with a VLM (Cosmos-Reason2-8B) and return "
             "structured road-safety hazards as a HazardAssessment."
         ),
-    )
-)
-async def image_understanding(
-    config: ImageUnderstandingConfig,
-    input: ImageUnderstandingInput,
-) -> HazardAssessment:
-    # 1. Fetch the Mapillary image and base64-encode it (catalog accepts JPG/PNG).
-    async with aiohttp.ClientSession() as session:
-        async with session.get(input.image_url) as resp:
-            resp.raise_for_status()
-            image_bytes = await resp.read()
-    image_b64 = base64.b64encode(image_bytes).decode()
-
-    # 2. Build the OpenAI-compatible payload: image + collision-aware prompt + JSON format ask.
-    full_prompt = input.prompt + _FORMAT_INSTRUCTION
-    payload = {
-        "model": config.model_id,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                    {"type": "text", "text": full_prompt},
-                ],
-            }
-        ],
-        "max_tokens": config.max_tokens,
-        "temperature": config.temperature,
-        # Local Cosmos needed repetition_penalty/no_repeat_ngram to stop hazard-loops; on the
-        # OpenAI-compatible cloud API the nearest knob is frequency_penalty.
-        "frequency_penalty": 0.3,
-    }
-    headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
-
-    # 3. Call the hosted VLM.
-    async with aiohttp.ClientSession() as session:
-        async with session.post(config.base_url, json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-    raw_content = data["choices"][0]["message"]["content"]
-
-    # 4. Split reasoning vs answer, parse the answer JSON into the structured fields.
-    thinking, answer = _split_think_answer(raw_content)
-    parsed = _parse_hazard_json(answer)
-    hazards = parsed.get("hazards") or ([answer] if answer else [])
-
-    return HazardAssessment(
-        image_url=input.image_url,
-        hazards=hazards if isinstance(hazards, list) else [str(hazards)],
-        missing_infrastructure=parsed.get("missing_infrastructure") or [],
-        visibility_issues=parsed.get("visibility_issues") or [],
-        junction_complexity=parsed.get("junction_complexity"),
-        vlm_reasoning=thinking,
-        raw_vlm_response=raw_content,
+        input_schema=ImageUnderstandingInput,
+        single_output_schema=HazardAssessment,
     )
