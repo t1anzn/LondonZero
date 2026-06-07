@@ -93,13 +93,13 @@ class FluxInpaintInput(BaseModel):
 
 
 def _build_inpaint_prompt(design_brief: str) -> str:
-    # Ground the render in real City of London street design (LTN 1/20 + the "All Change at
-    # Bank" public-realm scheme): plain asphalt + stone paving, NOT bright-green whole lanes.
+    # Keep this generic enough to work for ANY London junction image — the design_brief
+    # carries the scheme-specific intent and goes FIRST so it survives CLIP's 77-token limit.
+    # The short suffix adds a light London street-realism cue without over-constraining materials.
+    brief = design_brief.strip().rstrip(".")
     return (
-        f"{design_brief}. Rendered as a realistic City of London street: plain smooth dark "
-        "asphalt carriageway, pale Yorkstone stone-paved footways, granite kerbs, street trees "
-        "and planters, a level stone pedestrian crossing, minimal clean road markings, no bright "
-        "green paint. Photorealistic, daytime, high detail."
+        f"{brief}. Realistic London street scene, smooth asphalt and paved footways, "
+        "natural daylight, photorealistic, high detail."
     )
 
 

@@ -30,14 +30,14 @@ functions:
     mapillary_tool: mapillary_search
     aggregate_tool: aggregate_context
 
-  # ── Perception (Nishit) — Cosmos VLM ─────────────────────────────────────
+  # ── Perception (Nishit) — Nemotron Nano VL ───────────────────────────────
   image_understanding:
     _type: image_understanding
-    # cosmos-reason2-8b is catalog-listed but NOT deployed for this account (404);
-    # nemotron-nano-12b-v2-vl is the strongest VLM actually runnable on this key.
+    # Keeping the current VLM. To run locally, point VLM_BASE_URL at the local
+    # NIM (e.g. http://localhost:8002/v1/chat/completions).
     model_name: nvidia/nemotron-nano-12b-v2-vl
     api_key: ${NVIDIA_API_KEY}
-    base_url: https://integrate.api.nvidia.com/v1/chat/completions
+    base_url: ${VLM_BASE_URL:-https://integrate.api.nvidia.com/v1/chat/completions}
     reasoning: true
     max_tokens: 2048
     temperature: 0.2
@@ -51,8 +51,10 @@ functions:
     _type: guidance_rag
     rag_data_dir: data/rag
     top_k: 4
-    embedding_model: nvidia/nv-embedqa-e5-v5
-    base_url: https://integrate.api.nvidia.com/v1
+    # nv-embedqa-e5-v5 reached EOL; llama-nemotron-embed-1b-v2 is the current
+    # NeMo Retriever text embedding and is confirmed callable on this key.
+    embedding_model: nvidia/llama-nemotron-embed-1b-v2
+    base_url: ${EMBED_BASE_URL:-https://integrate.api.nvidia.com/v1}
     api_key: ${NVIDIA_API_KEY}
 
   feasibility_agent:
@@ -76,18 +78,22 @@ functions:
 llms:
   orchestrator_llm:
     _type: nim
-    # nemotron-ultra-253b is catalog-listed but NOT deployed for this account (404);
-    # super-49b is confirmed runnable and ample for the synthesis step.
-    model_name: nvidia/llama-3.3-nemotron-super-49b-v1
-    base_url: https://integrate.api.nvidia.com/v1
+    # Default: Nemotron Super 49B (v1.5) on cloud. For local, set ORCH_LLM_BASE_URL
+    # + ORCH_LLM_MODEL (e.g. the Nemotron 3 Nano GGUF served by llama.cpp on :8005).
+    model_name: ${ORCH_LLM_MODEL:-nvidia/llama-3.3-nemotron-super-49b-v1.5}
+    base_url: ${ORCH_LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}
     api_key: ${NVIDIA_API_KEY}
     temperature: 0.2
     max_tokens: 4096
 
   feasibility_llm:
     _type: nim
-    model_name: nvidia/llama-3.3-nemotron-super-49b-v1
-    base_url: https://integrate.api.nvidia.com/v1
+    # Feasibility is only a wording pass — reuse the orchestrator's model so it
+    # rides the SAME local 49B NIM (no separate container / extra GPU memory).
+    # The 9B had no arm64 NIM build (exec format error on GB10), so this is both
+    # cheaper and higher quality. Shares ORCH_LLM_BASE_URL.
+    model_name: ${ORCH_LLM_MODEL:-nvidia/llama-3.3-nemotron-super-49b-v1.5}
+    base_url: ${ORCH_LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}
     api_key: ${NVIDIA_API_KEY}
     temperature: 0.2
     max_tokens: 2048

@@ -27,17 +27,18 @@ export default function JunctionMap({ onLocationSelect }: Props) {
       // Leaflet CSS marker icon fix for Next.js
     >
       <RecenterOnLoad />
+      {/* Esri World Imagery — keyless satellite tiles, matches the aerial look */}
       <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution="Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics"
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        maxZoom={19}
       />
 
       {/* Bank Junction — fixed hotspot for MVP */}
-      {/* TODO: replace with dynamic heatmap layer from collision data */}
       <CircleMarker
         center={[BANK.lat, BANK.lon]}
-        radius={18}
-        pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.4 }}
+        radius={16}
+        pathOptions={{ color: "#76b900", fillColor: "#76b900", fillOpacity: 0.25, weight: 2 }}
         eventHandlers={{
           click: () => onLocationSelect(BANK.lat, BANK.lon, BANK.name),
         }}

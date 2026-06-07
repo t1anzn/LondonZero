@@ -1,6 +1,6 @@
 import dynamic from "next/dynamic";
 import { useRef, useState } from "react";
-import ResultsPanel from "@/components/ResultsPanel";
+import Dashboard from "@/components/Dashboard";
 import { analyseStream, AnalyseResponse, Stage, StageStatus } from "@/lib/api";
 
 // Leaflet requires browser APIs — load map client-side only
@@ -75,23 +75,14 @@ export default function HomePage() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-900">
-      {/* Left — map */}
-      <div className="flex-1 p-3">
-        <JunctionMap onLocationSelect={handleLocationSelect} />
-      </div>
-
-      {/* Right — results panel */}
-      <div className="w-[28rem] shrink-0 border-l border-gray-700 bg-gray-900">
-        <ResultsPanel
-          result={result}
-          stages={stages}
-          loading={loading}
-          error={error}
-          locationName={selected.name}
-          onAnalyse={handleAnalyse}
-        />
-      </div>
-    </div>
+    <Dashboard
+      result={result}
+      stages={stages}
+      loading={loading}
+      error={error}
+      locationName={selected.name}
+      onAnalyse={handleAnalyse}
+      mapSlot={<JunctionMap onLocationSelect={handleLocationSelect} />}
+    />
   );
 }

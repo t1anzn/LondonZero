@@ -116,7 +116,7 @@ class GuidanceRagConfig(FunctionBaseConfig, name="guidance_rag"):
     )
     top_k: int = Field(default=4, description="Number of guidance chunks to return")
     embedding_model: str = Field(
-        default="nvidia/nv-embedqa-e5-v5",
+        default="nvidia/llama-nemotron-embed-1b-v2",
         description="NVIDIA API Catalog embedding model (NIM) used for retrieval",
     )
     base_url: str = Field(default="https://integrate.api.nvidia.com/v1")
