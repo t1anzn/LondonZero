@@ -11,3 +11,9 @@ venv/
 
 # OS
 .DS_Store
+
+# LondonZero local data assets
+data/osm/greater-london-latest.osm.pbf
+data/stats19/casualty-last-5-years.csv
+data/stats19/collision-last-5-years.csv
+data/stats19/vehicle-last-5-years.csv

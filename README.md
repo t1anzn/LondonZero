@@ -51,6 +51,17 @@ Notes:
 - Run the workspace directly (`-w londonzero-ui`) rather than the root `npm run dev`, which also tries to build the upstream NVIDIA `vss-ui` packages and emits unrelated build errors.
 - If you hit `EADDRINUSE :::3000`, a dev server is already running. Free the port by killing the actual listener (not just the parent shell): `kill $(ss -ltnp 'sport = :3000' | grep -oP 'pid=\K[0-9]+')` or `pkill -f next-server`.
 
+## Local Data Assets
+
+The LondonZero workflow expects these files to exist locally, but they are excluded from this branch for now so the code can be pushed without large data blobs:
+
+- `data/osm/greater-london-latest.osm.pbf`
+- `data/stats19/casualty-last-5-years.csv`
+- `data/stats19/collision-last-5-years.csv`
+- `data/stats19/vehicle-last-5-years.csv`
+
+The workflow config and tools read those exact paths by default, so place the files there before running the agent end-to-end.
+
 ## Use Case / Problem Description
 
 The NVIDIA AI Blueprint for Video Search and Summarization addresses the challenge of deploying visual agents capable of interacting with large volumes of video data, both stored and streamed. This can be used to create vision AI agents, that can be applied to a multitude of use cases such as monitoring smart spaces, warehouse automation, and SOP validation. This is important where quick and accurate video analysis can lead to better decision-making and enhanced operational efficiency.
