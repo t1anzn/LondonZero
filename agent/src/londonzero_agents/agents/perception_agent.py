@@ -12,28 +12,26 @@ has the collision context needed to direct what the VLM looks for.
 """
 
 import logging
+from collections.abc import AsyncGenerator
 
+from nat.builder.builder import Builder
+from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
-from nat.data_models.component_ref import LLMRef
+from nat.data_models.component_ref import FunctionRef
 from nat.data_models.function import FunctionBaseConfig
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from londonzero_agents.data_models.collision_profile import CollisionProfile
 from londonzero_agents.data_models.hazard_assessment import HazardAssessment
-from londonzero_agents.tools.image_understanding import (
-    ImageUnderstandingConfig,
-    ImageUnderstandingInput,
-    image_understanding,
-)
+from londonzero_agents.tools.image_understanding import ImageUnderstandingInput
 from londonzero_agents.prompt import build_perception_prompt
 
 logger = logging.getLogger(__name__)
 
 
 class PerceptionAgentConfig(FunctionBaseConfig, name="perception_agent"):
-    vlm_name: LLMRef = Field(..., description="Cosmos Reasoning 8B model reference")
-    reasoning: bool = Field(default=True)
+    image_tool: FunctionRef = Field(default="image_understanding")
 
 
 class PerceptionAgentInput(BaseModel):
@@ -41,30 +39,27 @@ class PerceptionAgentInput(BaseModel):
     collision_profile: CollisionProfile
 
 
-# pydantic import needed at module level
-from pydantic import BaseModel
+@register_function(config_type=PerceptionAgentConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
+async def run_perception_agent(
+    config: PerceptionAgentConfig,
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    image_fn = await builder.get_function(config.image_tool)
 
+    async def _run(input: PerceptionAgentInput) -> HazardAssessment:
+        prompt = build_perception_prompt(input.collision_profile)
 
-@register_function(
-    FunctionInfo(
-        name="perception_agent",
+        return await image_fn.ainvoke(
+            ImageUnderstandingInput(image_url=input.image_url, prompt=prompt),
+            to_type=HazardAssessment,
+        )
+
+    yield FunctionInfo.create(
+        single_fn=_run,
         description=(
             "Analyse a Mapillary street image conditioned on collision history. "
             "Returns a HazardAssessment with identified road hazards."
         ),
-    )
-)
-async def run_perception_agent(
-    config: PerceptionAgentConfig,
-    input: PerceptionAgentInput,
-) -> HazardAssessment:
-    prompt = build_perception_prompt(input.collision_profile)
-
-    tool_config = ImageUnderstandingConfig(
-        vlm_name=config.vlm_name,
-        reasoning=config.reasoning,
-    )
-    return await image_understanding(
-        tool_config,
-        ImageUnderstandingInput(image_url=input.image_url, prompt=prompt),
+        input_schema=PerceptionAgentInput,
+        single_output_schema=HazardAssessment,
     )

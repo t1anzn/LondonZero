@@ -1,18 +1,27 @@
 """
-FLUX Inpainting tool — generates road redesign by inpainting the Mapillary base image.
+FLUX redesign tool — LOCAL FLUX-Fill inpainting on the DGX Spark.
 
-Uses FLUX.1-fill-dev (inpainting variant) via NVIDIA API Catalog.
-Input: original Mapillary image + text prompt built from FeasibilityBrief.design_brief.
-Output: base64-encoded redesigned image.
+The hosted NVIDIA FLUX endpoints only edit NVIDIA's own demo images (they reject
+user/base64/asset images), so the redesign step runs locally via diffusers
+FluxFillPipeline — the proven path from nishit/junction_audit.py:
+  fetch the Mapillary image -> build a road mask -> inpaint the design brief ->
+  return the 'after' image as base64.
 
-Check model availability at build.nvidia.com/models — model ID may vary.
+This is the Spark-local half of the hybrid pipeline (perception stays on the cloud VLM).
+Requirements at runtime:
+  - the process runs in an env with CUDA torch + diffusers (the proven Spark venv),
+  - black-forest-labs/FLUX.1-Fill-dev is present in ~/.cache/huggingface (already downloaded).
 """
 
+import asyncio
 import base64
+import io
 import logging
-import os
+import urllib.request
+from collections.abc import AsyncGenerator
 
-import aiohttp
+from nat.builder.builder import Builder
+from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
 from nat.data_models.function import FunctionBaseConfig
@@ -22,20 +31,59 @@ from londonzero_agents.data_models.redesign_output import RedesignOutput
 
 logger = logging.getLogger(__name__)
 
-NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1"
+# Lazy singleton: load the (heavy) pipeline once on first call, reuse it after.
+_FLUX = None
+
+
+def _load_flux(model_id: str):
+    global _FLUX
+    if _FLUX is None:
+        import torch
+        from diffusers import FluxFillPipeline
+
+        logger.info("Loading %s (once)…", model_id)
+        _FLUX = FluxFillPipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16).to("cuda")
+    return _FLUX
+
+
+def _make_mask(width: int, height: int):
+    """White trapezoid over the road surface (bottom-centre) — the region we let FLUX redraw."""
+    from PIL import Image, ImageDraw
+
+    mask = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(mask).polygon(
+        [(width * 0.06, height * 0.60), (width * 0.78, height * 0.60),
+         (width * 0.97, height), (width * 0.02, height)],
+        fill=255,
+    )
+    return mask
+
+
+def _render_sync(image_bytes: bytes, prompt: str, model_id: str, steps: int, guidance: float,
+                 size=(1024, 768)) -> str:
+    """Blocking GPU work — run via asyncio.to_thread so it doesn't stall the event loop."""
+    from PIL import Image
+
+    pipe = _load_flux(model_id)
+    base = Image.open(io.BytesIO(image_bytes)).convert("RGB").resize(size)
+    mask = _make_mask(*size)
+    result = pipe(
+        prompt=prompt, image=base, mask_image=mask,
+        height=size[1], width=size[0],
+        num_inference_steps=steps, guidance_scale=guidance,
+    ).images[0]
+    buf = io.BytesIO()
+    result.save(buf, format="JPEG", quality=92)
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 class FluxInpaintConfig(FunctionBaseConfig, name="flux_inpaint"):
     model_id: str = Field(
-        default="black-forest-labs/flux-fill-dev",
-        description="FLUX inpainting model ID on NVIDIA API Catalog",
+        default="black-forest-labs/FLUX.1-Fill-dev",
+        description="Local diffusers FLUX-Fill model id (must be in the HF cache)",
     )
-    steps: int = Field(default=30)
-    guidance_scale: float = Field(default=7.5)
-    api_key: str = Field(
-        default_factory=lambda: os.environ.get("NVIDIA_API_KEY", ""),
-        description="NVIDIA API key",
-    )
+    steps: int = Field(default=30, description="Inference steps")
+    guidance_scale: float = Field(default=30.0, description="FLUX-Fill guidance (proven value ~30)")
 
 
 class FluxInpaintInput(BaseModel):
@@ -45,65 +93,48 @@ class FluxInpaintInput(BaseModel):
 
 
 def _build_inpaint_prompt(design_brief: str) -> str:
-    # TODO: refine prompt engineering — prepend style tokens, append quality suffix
+    # Keep this generic enough to work for ANY London junction image — the design_brief
+    # carries the scheme-specific intent and goes FIRST so it survives CLIP's 77-token limit.
+    # The short suffix adds a light London street-realism cue without over-constraining materials.
+    brief = design_brief.strip().rstrip(".")
     return (
-        f"Aerial street-level urban redesign photograph. "
-        f"{design_brief}. "
-        "Photorealistic, daytime, London street, high detail."
+        f"{brief}. Realistic London street scene, smooth asphalt and paved footways, "
+        "natural daylight, photorealistic, high detail."
     )
 
 
-@register_function(
-    FunctionInfo(
-        name="flux_inpaint",
-        description=(
-            "Inpaint a Mapillary street image with FLUX to visualise a road redesign "
-            "proposed by the feasibility agent."
-        ),
-    )
-)
+@register_function(config_type=FluxInpaintConfig, framework_wrappers=[LLMFrameworkEnum.LANGCHAIN])
 async def flux_inpaint(
     config: FluxInpaintConfig,
-    input: FluxInpaintInput,
-) -> RedesignOutput:
-    prompt = _build_inpaint_prompt(input.design_brief)
+    builder: Builder,
+) -> AsyncGenerator[FunctionInfo]:
+    async def _run(input: FluxInpaintInput) -> RedesignOutput:
+        prompt = _build_inpaint_prompt(input.design_brief)
 
-    # Fetch and encode base image
-    async with aiohttp.ClientSession() as session:
-        async with session.get(input.image_url) as resp:
-            resp.raise_for_status()
-            base_bytes = await resp.read()
-    base_b64 = base64.b64encode(base_bytes).decode()
+        # Fetch the base image, then run the heavy GPU inpaint off the event loop.
+        def _fetch(url: str) -> bytes:
+            with urllib.request.urlopen(url, timeout=60) as r:
+                return r.read()
 
-    headers = {
-        "Authorization": f"Bearer {config.api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": config.model_id,
-        "prompt": prompt,
-        "image": base_b64,
-        "num_inference_steps": config.steps,
-        "guidance_scale": config.guidance_scale,
-        # TODO: add mask field once mask generation is defined
-    }
+        image_bytes = await asyncio.to_thread(_fetch, input.image_url)
+        result_b64 = await asyncio.to_thread(
+            _render_sync, image_bytes, prompt, config.model_id, config.steps, config.guidance_scale
+        )
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            f"{NVIDIA_API_BASE}/images/generations",
-            json=payload,
-            headers=headers,
-        ) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
+        return RedesignOutput(
+            original_image_url=input.image_url,
+            redesigned_image_b64=result_b64,
+            inpaint_prompt=prompt,
+            design_brief=input.design_brief,
+            explanation=input.explanation,
+        )
 
-    # TODO: confirm response schema from NVIDIA API — adjust key path as needed
-    result_b64 = data["data"][0]["b64_json"]
-
-    return RedesignOutput(
-        original_image_url=input.image_url,
-        redesigned_image_b64=result_b64,
-        inpaint_prompt=prompt,
-        design_brief=input.design_brief,
-        explanation=input.explanation,
+    yield FunctionInfo.create(
+        single_fn=_run,
+        description=(
+            "Inpaint a Mapillary street image with local FLUX-Fill to visualise the road "
+            "redesign from the feasibility agent's design brief."
+        ),
+        input_schema=FluxInpaintInput,
+        single_output_schema=RedesignOutput,
     )

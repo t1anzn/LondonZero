@@ -1,0 +1,71 @@
+# LondonZero — local NVIDIA NIM services on the DGX Spark (GB10).
+#
+# Each service exposes an OpenAI-compatible API. Start them ONE AT A TIME and
+# watch `nvidia-smi` — they share the 128GB unified memory with FLUX.
+#
+#   docker compose -f nim-compose.yml up -d nim-embed     # start light (1B)
+#   docker compose -f nim-compose.yml up -d nim-vlm       # then the 12B VLM
+#   docker compose -f nim-compose.yml up -d nim-orch      # then the 49B
+#   docker compose -f nim-compose.yml up -d nim-feas      # 9B feasibility
+#
+#   docker compose -f nim-compose.yml logs -f nim-embed   # watch startup
+#   docker compose -f nim-compose.yml down                # stop everything
+#
+# ${NVIDIA_API_KEY} is read from ../.env in this same directory (set it there).
+# Requires docker-group access (or run with sudo) and the nvidia container runtime.
+
+x-nim-common: &nim-common
+  gpus: all                      # if your compose errors on this, swap for the
+                                 # deploy.resources block (see note at bottom)
+  shm_size: "8gb"
+  dns:                           # reliable resolvers inside the container — the
+    - 8.8.8.8                    # host's Tailscale MagicDNS is flaky and was
+    - 1.1.1.1                    # causing NGC weight-download DNS failures
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  environment:
+    NGC_API_KEY: ${NVIDIA_API_KEY}
+  volumes:
+    - /home/nvidia/.cache/nim:/opt/nim/.cache
+  restart: unless-stopped
+
+services:
+  # Embeddings (RAG) — smallest, start here.  EMBED_BASE_URL=http://localhost:8003/v1
+  nim-embed:
+    <<: *nim-common
+    image: nvcr.io/nim/nvidia/llama-nemotron-embed-1b-v2:latest
+    container_name: nim-embed
+    ports:
+      - "8003:8000"
+
+  # Perception VLM (12B).  VLM_BASE_URL=http://localhost:8002/v1/chat/completions
+  nim-vlm:
+    <<: *nim-common
+    image: nvcr.io/nim/nvidia/nemotron-nano-12b-v2-vl:latest
+    container_name: nim-vlm
+    ports:
+      - "8002:8000"
+
+  # Orchestrator reasoning (Nemotron Super 49B v1.5).  ORCH_LLM_BASE_URL=http://localhost:8001/v1
+  nim-orch:
+    <<: *nim-common
+    image: nvcr.io/nim/nvidia/llama-3.3-nemotron-super-49b-v1.5:latest
+    container_name: nim-orch
+    ports:
+      - "8001:8000"
+
+  # NOTE: nvidia-nemotron-nano-9b-v2 has NO arm64 NIM build (exec format error on
+  # GB10), so there is no nim-feas service. Feasibility reuses the 49B (nim-orch)
+  # via ORCH_LLM_BASE_URL — see configs/londonzero.yml.
+
+# ── Note on GPU access ───────────────────────────────────────────────────────
+# `gpus: all` works on recent Docker Compose. If yours rejects it, replace the
+# `gpus: all` line in x-nim-common with:
+#
+#   deploy:
+#     resources:
+#       reservations:
+#         devices:
+#           - driver: nvidia
+#             count: all
+#             capabilities: [gpu]

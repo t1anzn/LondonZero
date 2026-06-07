@@ -21,6 +21,47 @@ VSS is organized into three areas of processing and analysis: **real-time video 
 
 This repository implements the blueprint and powers the [NVIDIA build experience](https://build.nvidia.com/nvidia/video-search-and-summarization) for natural-language video agents—search, summarization, visual Q&A, and related workflows—backed by generative AI, VLMs and LLMs, and [NVIDIA NIM](https://build.nvidia.com/) microservices as configured in the stacks below.
 
+## Running the LondonZero Agent API
+
+Start the multi-agent road-safety API (FastAPI + SSE) from the `agent/` directory. The config (`agent/configs/londonzero.yml`) reads secrets such as `NVIDIA_API_KEY` and `MAPILLARY_ACCESS_TOKEN` from the repo-root `.env`, so source it before launching:
+
+```bash
+cd agent
+set -a && . ../.env && set +a
+uv run uvicorn londonzero_agents.api.server:app --host 0.0.0.0 --port 8000
+```
+
+Once `Application startup complete` appears, the API serves `/health` and the streaming `/analyse/stream` endpoint on port 8000. If you see `[Errno 98] address already in use`, an instance is already running — reuse it (`curl http://127.0.0.1:8000/health`), kill it, or pass a different `--port`.
+
+> Requires [`uv`](https://docs.astral.sh/uv/) (install via `curl -LsSf https://astral.sh/uv/install.sh | sh`). `uv` provisions the Python 3.13+ interpreter the agent requires.
+
+## Running the LondonZero Frontend
+
+The dashboard is a Next.js app (`ui/apps/londonzero-ui`) inside the `ui/` Turbo monorepo. Install dependencies once, then run only the LondonZero workspace:
+
+```bash
+cd ui
+npm install                  # first time only — installs turbo + workspace deps
+npm run dev -w londonzero-ui # serves on http://localhost:3000
+```
+
+Open [http://localhost:3000](http://localhost:3000) once it's up. Point it at the agent API running on port 8000 (see above).
+
+Notes:
+- Run the workspace directly (`-w londonzero-ui`) rather than the root `npm run dev`, which also tries to build the upstream NVIDIA `vss-ui` packages and emits unrelated build errors.
+- If you hit `EADDRINUSE :::3000`, a dev server is already running. Free the port by killing the actual listener (not just the parent shell): `kill $(ss -ltnp 'sport = :3000' | grep -oP 'pid=\K[0-9]+')` or `pkill -f next-server`.
+
+## Local Data Assets
+
+The LondonZero workflow expects these files to exist locally, but they are excluded from this branch for now so the code can be pushed without large data blobs:
+
+- `data/osm/greater-london-latest.osm.pbf`
+- `data/stats19/casualty-last-5-years.csv`
+- `data/stats19/collision-last-5-years.csv`
+- `data/stats19/vehicle-last-5-years.csv`
+
+The workflow config and tools read those exact paths by default, so place the files there before running the agent end-to-end.
+
 ## Use Case / Problem Description
 
 The NVIDIA AI Blueprint for Video Search and Summarization addresses the challenge of deploying visual agents capable of interacting with large volumes of video data, both stored and streamed. This can be used to create vision AI agents, that can be applied to a multitude of use cases such as monitoring smart spaces, warehouse automation, and SOP validation. This is important where quick and accurate video analysis can lead to better decision-making and enhanced operational efficiency.

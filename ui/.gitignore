@@ -6,7 +6,8 @@ node_modules/
 # Build outputs
 dist/
 build/
-lib/
+# lib/ is ignored for compiled packages — londonzero-ui/lib/ is source, excluded below
+packages/*/lib/
 *.tsbuildinfo
 
 # Compiled files
